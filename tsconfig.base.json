@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    // 以现代浏览器和现代 Node.js 都支持的 ES2022 为基础。
+    "target": "ES2022",
+    "lib": ["ES2022"],
+
+    // 开启严格模式：让错误尽可能在开发阶段被发现。
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // Monorepo 中各子项目都继承这些通用规则。
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "verbatimModuleSyntax": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true
+  }
+}

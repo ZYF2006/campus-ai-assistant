@@ -1,0 +1,10 @@
+# pnpm 通过此文件识别 Monorepo 中的子项目。
+# apps 放“可运行应用”，packages 放“可被应用复用的内部包”。
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# pnpm 11 默认阻止依赖执行安装脚本；这里只放行 Vite 必需的 esbuild。
+# 未列出的依赖仍默认禁止，体现“最小权限”原则。
+allowBuilds:
+  esbuild: true

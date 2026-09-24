@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+# 提交前只检查已暂存的文件。
+# 注意：这里直接调用本地安装的 lint-staged，不依赖 pnpm 是否能被解析到。
+node_modules/.bin/lint-staged
+

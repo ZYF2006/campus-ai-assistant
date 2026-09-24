@@ -1,0 +1,27 @@
+# 依赖与构建产物可由命令重新生成，不提交到 Git。
+node_modules/
+dist/
+
+# 本地环境变量可能包含 API Key，绝不能提交。
+.env
+.env.*
+!.env.example
+
+# 编辑器和操作系统产生的临时文件。
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 日志文件。
+*.log
+
+# 本地 pnpm 缓存与临时解包目录（正常位于项目外，这里兜底忽略）。
+.pnpm-store/
+.pnpm-home/
+.tmp-docx/
+
+# Windows 专用 Hook 包装脚本：本机环境没有可用的 POSIX sh 时用于替代
+# .husky/pre-commit 与 .husky/commit-msg，仅本机生效，不提交。
+.husky/*.bat
+

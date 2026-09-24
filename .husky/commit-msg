@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+# 检查提交信息是否符合 Conventional Commits 规范。
+# 注意：这里直接调用本地安装的 commitlint，不依赖 pnpm 是否能被解析到。
+node_modules/.bin/commitlint --edit "$1"
+

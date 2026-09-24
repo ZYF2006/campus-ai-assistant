@@ -1,0 +1,11 @@
+node_modules
+dist
+pnpm-lock.yaml
+.husky/_
+
+# 本地 pnpm 缓存目录（正常情况下位于项目外，这里兜底忽略）。
+.pnpm-store/
+.pnpm-home/
+
+# 临时解包目录
+.tmp-docx/
