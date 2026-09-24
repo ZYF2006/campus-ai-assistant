@@ -6,7 +6,8 @@
  * `import type { ... } from "@campus-ai/shared-types"` 引用这里定义的类型，
  * 从而避免双方各自定义一份聊天数据结构而产生不一致。
  *
- * 注意：类型声明在编译为 JavaScript 之后会被完全擦除，不产生多余的运行时代码。
+ * 文件末尾有一组「类型级自检」，它们在编译期检查上面的类型是否被写错，
+ * 但不会在编译产物里留下任何可执行代码。
  */
 
 /* ------------------------------------------------------------------ *
@@ -192,32 +193,45 @@ export function describeChatEvent(event: ChatEvent): string {
 }
 
 /* ------------------------------------------------------------------ *
- * 8. 类型级自检（编译期断言，不产生运行时代码）
+ * 8. 类型级自检（编译期断言，完全不产生运行时代码）
  * ------------------------------------------------------------------ */
 
 /** 类型相等断言：只有当 A 与 B 完全相同时才推断为 true。 */
 type Equals<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 
-/** 编译期断言入口：若泛型参数不是 true，这里就会产生类型错误。 */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- Assert 只在类型层面被使用
-declare const assertType: <Assert extends true>() => void;
+/**
+ * 编译期断言入口。
+ *
+ * 这里刻意把它声明为「类型」而不是「值」：R extends true 是类型参数约束，
+ * 因此 `Assert<Equals<...>>` 只会在编译期被检查，编译成 JavaScript 后
+ * 整段代码会被彻底擦除，不会产生任何可执行语句。
+ *
+ * 反例：如果写成 `declare const assertType: <A extends true>() => void`
+ * 再调用 `assertType<...>()`，tsc 会保留那次调用，产物里就会出现 `assertType()`
+ * —— 这个常量从未被定义，任何模块只要 import 本包就会在运行时直接抛错。
+ */
+type Assert<R extends true> = R;
 
-// ChatMessage 的 role 必须是 Role，不能退化成普通 string。
-assertType<Equals<ChatMessage["role"], Role>>();
-// ApiResponse<T> 的 data 字段类型必须由 T 决定。
-assertType<Equals<ApiResponse<number>["data"], number>>();
-// Omit 派生：NewChatMessage 恰好等于 role + content（没有 id）。
-assertType<Equals<NewChatMessage, { role: Role; content: string }>>();
-// Pick + Partial 派生：UpdateChatMessage 恰好等于可选的 content。
-assertType<Equals<UpdateChatMessage, { content?: string }>>();
-// 自定义工具类型 ElementOf<T> 的四种典型输入。
-assertType<Equals<ElementOf<ChatMessage[]>, ChatMessage>>();
-assertType<Equals<ElementOf<readonly string[]>, string>>();
-assertType<Equals<ElementOf<[number, string]>, number | string>>();
-assertType<Equals<ElementOf<string>, never>>();
-// 判别联合：success 分支一定能取到 message。
-assertType<Equals<Extract<ChatEvent, { status: "success" }>["message"], ChatMessage>>();
+/** 逐项断言：每一项都必须是 true，否则这里会立刻编译报错。 */
+type TypeAssertions = [
+  // ChatMessage 的 role 必须是 Role，不能退化成普通 string。
+  Assert<Equals<ChatMessage["role"], Role>>,
+  // ApiResponse<T> 的 data 字段类型必须由 T 决定。
+  Assert<Equals<ApiResponse<number>["data"], number>>,
+  // Omit 派生：NewChatMessage 恰好等于 role + content（没有 id）。
+  Assert<Equals<NewChatMessage, { role: Role; content: string }>>,
+  // Pick + Partial 派生：UpdateChatMessage 恰好等于可选的 content。
+  Assert<Equals<UpdateChatMessage, { content?: string }>>,
+  // 自定义工具类型 ElementOf<T> 的四种典型输入。
+  Assert<Equals<ElementOf<ChatMessage[]>, ChatMessage>>,
+  Assert<Equals<ElementOf<readonly string[]>, string>>,
+  Assert<Equals<ElementOf<[number, string]>, number | string>>,
+  Assert<Equals<ElementOf<string>, never>>,
+  // 判别联合：success 分支一定能取到 message。
+  Assert<Equals<Extract<ChatEvent, { status: "success" }>["message"], ChatMessage>>,
+];
 
-// 上面全是类型断言；这里只保留一个值引用，避免声明被判定为未使用。
-void assertType;
+/** 消费上面的断言结果：只有 TypeAssertions 全部为 true 时这一行才成立。 */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- 仅用于编译期自检
+type AllTypeAssertionsPass = Assert<TypeAssertions extends [true, ...true[]] ? true : false>;

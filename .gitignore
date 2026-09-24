@@ -1,27 +1,60 @@
-# 依赖与构建产物可由命令重新生成，不提交到 Git。
-node_modules/
-dist/
+# ============================================================
+# 校园 AI 助手 —— Git 忽略规则
+# 原则：凡是「能由命令重新生成」或「本机私有」的东西都不进仓库，
+#       这样 clone 下来 pnpm install 就能得到完全一致的环境。
+# ============================================================
 
-# 本地环境变量可能包含 API Key，绝不能提交。
+# ---------- 依赖 ----------
+node_modules/
+
+# ---------- 构建产物 ----------
+dist/
+build/
+*.tsbuildinfo
+
+# ---------- Vite 缓存（正常在 node_modules 内，包管理器的 hoist 方式变了就可能外移）----------
+.vite/
+.vite-temp/
+
+# ---------- 本地环境变量：可能含 API Key，绝不能提交 ----------
 .env
 .env.*
+# .env.example 只有占位符、不含真实密钥，是团队共享的模板，必须提交。
 !.env.example
+!**/.env.example
+# Vite 的本地覆盖文件，同样是本机私有的。
+*.local
 
-# 编辑器和操作系统产生的临时文件。
+# ---------- 测试与检查工具缓存 ----------
+coverage/
+.nyc_output/
+.eslintcache
+.stylelintcache
+*.tsbuildinfo
+
+# ---------- 编辑器与操作系统临时文件 ----------
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# 日志文件。
+# ---------- 日志 ----------
 *.log
+npm-debug.log*
+pnpm-debug.log*
 
-# 本地 pnpm 缓存与临时解包目录（正常位于项目外，这里兜底忽略）。
+# ---------- 本地 pnpm 缓存（正常位于项目外，这里兜底忽略）----------
 .pnpm-store/
 .pnpm-home/
+
+# ---------- 实验过程临时目录 ----------
 .tmp-docx/
 
-# Windows 专用 Hook 包装脚本：本机环境没有可用的 POSIX sh 时用于替代
-# .husky/pre-commit 与 .husky/commit-msg，仅本机生效，不提交。
+# ---------- 本机私有的 Windows Hook 包装脚本 ----------
+# 本机环境的 MSYS sh 不可用，用 .bat 等价替代 .husky/pre-commit 与 .husky/commit-msg，
+# 这类包装脚本仅在本机生效，不属于项目配置，不提交。
 .husky/*.bat
-
