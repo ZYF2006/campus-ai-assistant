@@ -1,18 +1,10 @@
 # 校园 AI 助手：课程起始项目
 
-这是《AI 大前端项目开发》的贯穿式教学案例。项目采用 pnpm Monorepo，包含 Vue 3 前端、Express 后端和前后端共享的 TypeScript 类型包。
+项目采用 pnpm Monorepo，包含 Vue 3 前端、Express 后端和前后端共享的 TypeScript 类型包。
 
 第 1 讲的目标是完成类型安全的全栈模拟聊天框架。后端暂不调用真实大模型；后续课程将在同一项目上逐步加入大模型 API、流式响应、多轮对话、RAG、Agent 和部署功能。
 
-## 本讲学习目标
 
-- 理解 pnpm workspace 与 Monorepo 的项目组织方式；
-- 使用 TypeScript 为聊天请求和响应建模；
-- 通过 workspace 包实现前后端类型共享；
-- 理解 Vue、Pinia、前端 API 模块和 Express 的职责；
-- 完成一次完整的前端请求、后端处理和页面渲染流程。
-
-## 项目结构
 
 ```text
 campus-ai-assistant/
@@ -60,13 +52,6 @@ campus-ai-assistant/
 - Vite `/api` 代理；
 - Express `/api/health` 健康检查。
 
-## 第 1 讲实践内容
-
-- 定义 `ChatMessage`、`ApiResponse<T>` 等共享类型；
-- 实现 `POST /api/chat`；
-- 创建消息组件、输入区域和聊天页面；
-- 创建 Pinia 聊天 Store；
-- 完成前后端请求、错误处理和交互细节。
 
 ## 环境要求
 
@@ -87,7 +72,7 @@ pnpm dev
 - 前端：<http://localhost:5173>
 - 后端健康检查：<http://localhost:3000/api/health>
 
-页面必须通过 HTTP 地址打开，不能双击 HTML 文件使用 `file://`。
+
 
 ## 全栈调用链
 
