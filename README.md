@@ -62,7 +62,7 @@ campus-ai-assistant/
 - ESLint、Prettier、Husky、lint-staged、commitlint；
 - Vite `/api` 代理；
 - Express `/api/health` 健康检查；
-- 阿里百炼（OpenAI 兼容接口）在线大模型接入。
+- 阿里百炼（OpenAI 兼容接口）在线大模型接入：使用 `openai` SDK，另保留原生 `fetch` 对照实现。
 
 ## 环境变量
 
@@ -122,8 +122,7 @@ Vite 开发代理
    ↓
 Express 后端（apps/server/src/index.ts）
    ↓ services/llm.ts（统一入口，按 LLM_PROVIDER 选择供应商）
-   ↓
-阿里百炼 /chat/completions（API Key 只在这一段由后端加入）
+   ↓ chatWithBailianOpenAI()：OpenAI SDK → 百炼 /chat/completions（API Key 只在这一段由后端加入）
    ↓
 Express 包装成 ChatResponse
    ↓
@@ -178,14 +177,14 @@ Content-Type: application/json
 
 失败响应：
 
-| 情形 | HTTP | `message` |
-| --- | --- | --- |
-| 消息为空或缺少 user 消息 | 400 | `消息不能为空` |
-| `LLM_PROVIDER` 填了不支持的值 | 502 | `LLM_PROVIDER只能填写bailian` |
-| 未配置 `DASHSCOPE_API_KEY` | 502 | `未配置阿里百炼DASHSCOPE_API_KEY` |
-| 上游返回非 2xx | 502 | `阿里百炼调用失败：HTTP <状态码> <状态说明>` |
-| 上游超时（120 秒） | 502 | `阿里百炼调用超时，请稍后重试` |
-| 上游返回空内容 | 502 | `阿里百炼没有返回有效内容` |
+| 情形                           | HTTP | `message`                               |
+| ------------------------------ | ---- | --------------------------------------- |
+| 消息为空或缺少 user 消息       | 400  | `消息不能为空`                          |
+| `LLM_PROVIDER` 填了不支持的值  | 502  | `LLM_PROVIDER只能填写bailian`           |
+| 未配置 `DASHSCOPE_API_KEY`     | 502  | `未配置阿里百炼DASHSCOPE_API_KEY`       |
+| 上游返回非 2xx                 | 502  | `阿里百炼调用失败：<状态码> <上游说明>` |
+| 上游超时（SDK timeout 120 秒） | 502  | `阿里百炼调用失败：Request timed out.`  |
+| 上游返回空内容                 | 502  | `阿里百炼没有返回有效内容`              |
 
 ## 常用命令
 
@@ -203,6 +202,7 @@ pnpm format       # 格式化代码
 - Pinia 只保存当前页面状态，本讲不使用 `localStorage`；
 - API Key 只能保存在后端环境变量中，不能写入前端、不能硬编码、不能提交到仓库；
 - 路由只调用 `services/llm.ts` 的 `chatWithConfiguredModel`，不判断厂商；
+- 模型调用只允许出现在后端 `services`，使用 `openai` SDK（`chatWithBailianOpenAI`）；
 - 发给模型的 `messages` 只包含 `role` 和 `content`，不 `stream`；
 - 消息内容使用 Vue 文本插值显示，不使用 `v-html`；
 - 错误文案必须可理解，且绝不含 API Key；

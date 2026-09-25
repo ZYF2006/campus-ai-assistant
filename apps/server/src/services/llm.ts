@@ -1,4 +1,5 @@
 import type { ChatMessage } from "@campus-ai/shared-types";
+import OpenAI from "openai";
 
 /**
  * 大模型统一入口。
@@ -12,37 +13,8 @@ import type { ChatMessage } from "@campus-ai/shared-types";
  * 本实验的在线方案使用「阿里百炼（DashScope）」的 OpenAI 兼容接口。
  */
 
-/* ------------------------------------------------------------------ *
- * 1. 兼容接口的报文类型
- * ------------------------------------------------------------------ */
-
-/** OpenAI 兼容接口只接受这三种 role。 */
+/** 兼容接口只接受这三种 role。 */
 type WireRole = "system" | "user" | "assistant";
-
-interface WireMessage {
-  role: WireRole;
-  content: string;
-}
-
-interface ChatCompletionRequest {
-  model: string;
-  messages: WireMessage[];
-  /** 本实验不使用流式输出，一次性拿到完整回答。 */
-  stream: false;
-  temperature: number;
-}
-
-interface ChatCompletionResponse {
-  choices?: {
-    message?: {
-      content?: string | null;
-    };
-  }[];
-}
-
-/* ------------------------------------------------------------------ *
- * 2. 配置读取
- * ------------------------------------------------------------------ */
 
 /** 百炼兼容接口的默认地址（华北2·北京地域）。 */
 const DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
@@ -74,30 +46,85 @@ function readBailianConfig(): BailianConfig {
   return { apiKey, baseURL, model };
 }
 
+/* ------------------------------------------------------------------ *
+ * 1. 方案二（本实验采用）：OpenAI SDK 实现
+ * ------------------------------------------------------------------ */
+
+/**
+ * 通过 OpenAI 兼容 SDK 调用阿里百炼，返回模型生成的文本。
+ *
+ * 百炼提供 OpenAI 兼容接口，因此只需替换 Key、Base URL 和模型名称，
+ * 其余调用方式与 OpenAI 官方 SDK 用法完全一致。
+ */
+export async function chatWithBailianOpenAI(messages: ChatMessage[]): Promise<string> {
+  const { apiKey, baseURL, model } = readBailianConfig();
+
+  // 关键知识点2：百炼兼容 OpenAI 协议，无需手写 HTTP 报文。
+  const client = new OpenAI({
+    apiKey,
+    baseURL,
+    timeout: REQUEST_TIMEOUT_MS,
+  });
+
+  try {
+    const completion = await client.chat.completions.create({
+      model,
+      // 关键知识点3：传入全部 messages，模型才能理解本轮对话的上下文。
+      // 同时只发送 role 和 content，不透传 id 等前端字段。
+      messages: messages.map(({ role, content }) => ({ role, content })),
+      // 本实验不使用流式输出，一次性拿到完整回答。
+      stream: false,
+      temperature: 0.7,
+    });
+
+    // 关键知识点4：OpenAI 兼容响应的正文位于 choices[0].message.content。
+    const content = completion.choices[0]?.message.content?.trim();
+
+    if (!content) {
+      throw new Error("阿里百炼没有返回有效内容");
+    }
+
+    return content;
+  } catch (error: unknown) {
+    // 统一包装成可理解的错误文案；绝不把 API Key 拼进错误信息。
+    const message = error instanceof Error ? error.message : "未知错误";
+    throw new Error(`阿里百炼调用失败：${message}`, { cause: error });
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * 2. 对照实现：原生 fetch 版本
+ * ------------------------------------------------------------------ */
+
+interface ChatCompletionResponse {
+  choices?: {
+    message?: {
+      content?: string | null;
+    };
+  }[];
+}
+
 /** 去掉地址结尾的斜杠，避免拼出 //chat/completions。 */
 function trimTrailingSlash(url: string): string {
   return url.endsWith("/") ? url.slice(0, -1) : url;
 }
 
-/* ------------------------------------------------------------------ *
- * 3. 在线方案：调用阿里百炼
- * ------------------------------------------------------------------ */
-
 /**
- * 通过 OpenAI 兼容的 /chat/completions 接口调用百炼，返回模型生成的纯文本。
+ * 与上面完全等价的「原生 fetch」写法，保留用于对照 HTTP 与 SDK 两种实现。
  *
- * 本工程刻意不安装 openai 依赖，用原生 fetch 发送完全相同的报文，
- * 因此代码里能看到「协议本身」长什么样；换成 SDK 只是把这段报文
- * 交给 client.chat.completions.create({ model, messages, stream, temperature })。
+ * 它把 SDK 隐藏的细节摊开：POST <baseURL>/chat/completions、
+ * Authorization: Bearer <Key>、JSON 报文、choices[0].message.content。
+ * 业务代码不调用本函数，仅作为学习对照与排错参考。
  */
 export async function chatWithBailian(messages: ChatMessage[]): Promise<string> {
   const { apiKey, baseURL, model } = readBailianConfig();
 
-  const requestBody: ChatCompletionRequest = {
+  const requestBody = {
     model,
-    // 关键知识点2：只发送 role 和 content，不透传 id 等前端字段。
-    // 传入全部 messages，模型才能理解本轮对话的上下文。
-    messages: messages.map(({ role, content }) => ({ role, content })),
+    messages: messages.map(({ role, content }) => ({ role, content })) as {
+      role: WireRole;
+      content: string;
+    }[],
     stream: false,
     temperature: 0.7,
   };
@@ -108,8 +135,7 @@ export async function chatWithBailian(messages: ChatMessage[]): Promise<string> 
     response = await fetch(`${trimTrailingSlash(baseURL)}/chat/completions`, {
       method: "POST",
       headers: {
-        // 关键知识点3：Key 只在后端向百炼发出的这个请求头里出现，
-        // 浏览器永远看不到它。
+        // Key 只在「后端 → 百炼」这一段出现，浏览器永远看不到它。
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
@@ -136,11 +162,9 @@ export async function chatWithBailian(messages: ChatMessage[]): Promise<string> 
   }
 
   if (!response.ok) {
-    // 只回传业务化文案与状态码，不透传可能含内部信息的完整报文。
     throw new Error(`阿里百炼调用失败：HTTP ${response.status} ${response.statusText}`.trim());
   }
 
-  // 关键知识点4：OpenAI 兼容响应的正文位于 choices[0].message.content。
   const content = payload?.choices?.[0]?.message?.content?.trim();
 
   if (!content) {
@@ -151,7 +175,7 @@ export async function chatWithBailian(messages: ChatMessage[]): Promise<string> 
 }
 
 /* ------------------------------------------------------------------ *
- * 4. 统一入口
+ * 3. 统一入口
  * ------------------------------------------------------------------ */
 
 /**
@@ -165,7 +189,7 @@ export async function chatWithConfiguredModel(messages: ChatMessage[]): Promise<
   const provider = (process.env.LLM_PROVIDER ?? "bailian").trim().toLowerCase();
 
   if (provider === "bailian") {
-    return chatWithBailian(messages);
+    return chatWithBailianOpenAI(messages);
   }
 
   // 本实验不接入本地 Ollama；如需本地模型，在这个分支里补一个
