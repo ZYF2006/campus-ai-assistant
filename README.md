@@ -34,7 +34,8 @@ campus-ai-assistant/
 │     ├─ src/
 │     │  ├─ index.ts        # 路由：运行时校验 + 包装 ChatResponse
 │     │  └─ services/
-│     │     └─ llm.ts       # 大模型统一入口（供应商差异隔离在这里）
+│     │     ├─ llm.ts       # 大模型统一入口（按 LLM_PROVIDER 选择供应商）
+│     │     └─ bailian.ts   # 在线方案：阿里百炼（OpenAI SDK）
 │     ├─ .env.example
 │     ├─ package.json
 │     └─ tsconfig.json
@@ -122,7 +123,7 @@ Vite 开发代理
    ↓
 Express 后端（apps/server/src/index.ts）
    ↓ services/llm.ts（统一入口，按 LLM_PROVIDER 选择供应商）
-   ↓ chatWithBailianOpenAI()：OpenAI SDK → 百炼 /chat/completions（API Key 只在这一段由后端加入）
+   ↓ services/bailian.ts：chatWithBailianOpenAI() → OpenAI SDK → 百炼 /chat/completions（API Key 只在这一段由后端加入）
    ↓
 Express 包装成 ChatResponse
    ↓
