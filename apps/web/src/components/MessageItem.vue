@@ -1,59 +1,135 @@
 <script setup lang="ts">
 import type { ChatMessage } from "@campus-ai/shared-types";
+import { computed } from "vue";
 
-defineProps<{
-  message: ChatMessage;
-}>();
+const props = defineProps<{ message: ChatMessage }>();
 
-// 角色名称映射：把消息角色（system、user、assistant）翻译成界面上显示的中文。
 const roleNames: Record<ChatMessage["role"], string> = {
   system: "系统",
-  user: "用户",
-  assistant: "助手",
+  user: "我",
+  assistant: "校园 AI 助手",
 };
+
+// 第三讲已经存在的四个下载地址。
+const downloadPaths = new Set([
+  "/download/anquan-zherenshu.docx",
+  "/download/fensanshixi-shenqingbiao.docx",
+  "/download/shixi-baogao.docx",
+  "/download/xuanti-laiyuanbiao.doc",
+]);
+
+// 拆分普通文字和下载链接，不生成 HTML 字符串。
+const parts = computed(() =>
+  props.message.content.split(/(\[[^\]]+\]\(\/download\/[^)]+\))/g).map((text) => {
+    const match = /^\[([^\]]+)\]\((\/download\/[^)]+)\)$/.exec(text);
+    const label = match?.[1];
+    const href = match?.[2];
+
+    return label && href && downloadPaths.has(href) ? { text: label, href } : { text, href: "" };
+  }),
+);
 </script>
 
 <template>
-  <div class="chat-message" :class="message.role">
-    <strong>{{ roleNames[message.role] }}</strong>
+  <article :class="['message', message.role]">
+    <span class="role">{{ roleNames[message.role] }}</span>
 
-    <!--
-      关键知识点：使用文本插值会自动转义 HTML，
-      不使用 v-html，避免不可信内容造成 XSS。
-    -->
-    <p>{{ message.content }}</p>
-  </div>
+    <p v-if="message.content" class="bubble">
+      <template v-for="(part, index) in parts" :key="index">
+        <a v-if="part.href" :href="part.href" download class="download-card">
+          {{ part.text }}
+        </a>
+        <span v-else>{{ part.text }}</span>
+      </template>
+    </p>
+  </article>
 </template>
 
 <style scoped>
-.chat-message {
+.message {
+  display: flex;
+  flex-direction: column;
   max-width: 78%;
-  padding: 10px 14px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #ffffff;
 }
 
-.chat-message strong {
+.role {
+  margin-bottom: 4px;
   font-size: 12px;
-  color: #6b7280;
+  color: #8aa08f;
 }
 
-.chat-message p {
-  margin: 4px 0 0;
+/* 用户靠右，助手靠左，形成对话气泡。 */
+.message.user {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.message.user .bubble {
+  color: #ffffff;
+  background: linear-gradient(135deg, #7fa98a, #5e8b6d);
+  border: none;
+  border-bottom-right-radius: 6px;
+}
+
+.message.assistant {
+  align-self: flex-start;
+  align-items: flex-start;
+}
+
+.message.assistant .bubble {
+  border-bottom-left-radius: 6px;
+}
+
+.message.system {
+  align-self: center;
+  align-items: center;
+}
+
+.message.system .bubble {
+  padding: 0;
+  color: #8aa08f;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.bubble {
+  margin: 0;
+  padding: 10px 16px;
+  border: 1px solid #e3ede0;
+  border-radius: 18px;
+  color: #3e5148;
+  background: #ffffff;
+  box-shadow: 0 2px 6px rgb(86 122 96 / 6%);
   line-height: 1.6;
   white-space: pre-wrap;
-  word-break: break-word;
+  color: #1f5c3a;
+}
+.download-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  margin: 2px 0;
+  border: 1px solid #e3ede0;
+  border-radius: 8px;
+  background: #f6faf7;
+  text-decoration: none;
+  color: #2e7d52;
+}
+.doc-icon {
+  font-size: 18px;
+}
+@media (max-width: 640px) {
+  .message {
+    max-width: 88%;
+  }
+}
+.message {
+  flex-shrink: 0;
 }
 
-/* 用户消息靠右，助手消息靠左。 */
-.chat-message.user {
-  align-self: flex-end;
-  background: #eff6ff;
-  border-color: #bfdbfe;
-}
-
-.chat-message.assistant {
-  align-self: flex-start;
+.bubble {
+  overflow-wrap: anywhere;
 }
 </style>

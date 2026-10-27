@@ -70,23 +70,35 @@ export interface ApiResponse<T> {
 }
 
 /* ------------------------------------------------------------------ *
- * 4. 聊天请求与响应
+ * 4. 会话历史与聊天请求（第 5 讲：多轮对话与上下文记忆）
  * ------------------------------------------------------------------ */
 
 /**
- * 前端发送给后端的聊天请求。
+ * 服务器保存的会话详情：完整问答历史 + 旧对话摘要。
+ *
+ * 页面用它显示完整历史；模型本次实际收到哪几条由后端窗口策略决定，
+ * 两者可以不同，选择窗口不会删除数据库中的记录。
  */
-export interface ChatRequest {
-  /** 前端发送给后端的聊天消息列表（含历史消息） */
+export interface SessionDetail {
+  id: string;
   messages: ChatMessage[];
+  summary: string;
+  /** 摘要覆盖的完整问答轮数。 */
+  summaryThrough: number;
 }
 
 /**
- * 后端返回给前端的聊天响应。
+ * 浏览器提交给流式聊天接口的请求。
  *
- * 使用类型别名复用泛型接口 ApiResponse<T>，其中 data 为一条 ChatMessage。
+ * 第 5 讲只提交两个编号和当前问题：历史由服务器按 sessionId 读取，
+ * requestId 用于识别「同一次提问」的重试，避免重复保存。
  */
-export type ChatResponse = ApiResponse<ChatMessage>;
+export interface SessionChatRequest {
+  sessionId: string;
+  /** 同一次提问重试时不变，新问题才生成新编号。 */
+  requestId: string;
+  content: string;
+}
 
 /* ------------------------------------------------------------------ *
  * 5. 用工具类型派生消息类型
@@ -193,7 +205,35 @@ export function describeChatEvent(event: ChatEvent): string {
 }
 
 /* ------------------------------------------------------------------ *
- * 8. 类型级自检（编译期断言，完全不产生运行时代码）
+ * 8. 流式响应事件（SSE）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 模型服务产生的事件。
+ *
+ * 与上面的 ChatEvent（前端界面状态）不同，这是「模型 → 后端」这一段的事件：
+ * - delta：新增的一段文字；
+ * - done：生成结束，携带模型的结束原因。
+ *
+ * 注意：一次收到的一段文字，不一定恰好对应一个 Token。
+ */
+export type ModelStreamEvent =
+  | { type: "delta"; text: string }
+  | { type: "done"; finishReason: string };
+
+/**
+ * 后端通过 SSE 逐段推送给前端的事件。
+ *
+ * 除模型事件外，还可能发送错误信息（例如模型服务异常、超时）：
+ * - delta：模型逐段生成的增量文本；
+ * - done：生成完成，携带模型的结束原因；
+ * - error：生成过程中出错。
+ * 每个事件都会被 JSON.stringify 后放进 SSE 的 data 字段。
+ */
+export type ChatStreamEvent = ModelStreamEvent | { type: "error"; message: string };
+
+/* ------------------------------------------------------------------ *
+ * 9. 类型级自检（编译期断言，完全不产生运行时代码）
  * ------------------------------------------------------------------ */
 
 /** 类型相等断言：只有当 A 与 B 完全相同时才推断为 true。 */
@@ -230,6 +270,10 @@ type TypeAssertions = [
   Assert<Equals<ElementOf<string>, never>>,
   // 判别联合：success 分支一定能取到 message。
   Assert<Equals<Extract<ChatEvent, { status: "success" }>["message"], ChatMessage>>,
+  // 流式事件：delta 分支一定能取到增量文本。
+  Assert<Equals<Extract<ChatStreamEvent, { type: "delta" }>["text"], string>>,
+  // 流式事件：done 分支一定能取到模型的结束原因。
+  Assert<Equals<Extract<ChatStreamEvent, { type: "done" }>["finishReason"], string>>,
 ];
 
 /** 消费上面的断言结果：只有 TypeAssertions 全部为 true 时这一行才成立。 */

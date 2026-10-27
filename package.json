@@ -12,6 +12,7 @@
     "dev": "pnpm --parallel --filter @campus-ai/web --filter @campus-ai/server dev",
     "build": "pnpm -r --if-present build",
     "typecheck": "pnpm -r --if-present typecheck",
+    "db:init": "pnpm --filter @campus-ai/server db:init",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
