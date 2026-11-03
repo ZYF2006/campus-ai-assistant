@@ -1,212 +1,304 @@
-// 该模块负责与 LLM 服务提供商交互，并把各家返回的流式数据统一转换为项目自己的事件。
-// 项目约定的事件只有两类：delta（一段增量正文）和 done（回答结束及其原因），
-// 这样上层路由无需关心底层是 Ollama 还是百炼，只需消费统一的 ModelStreamEvent。
+/**
+ * 模型流式适配模块。
+ *
+ * 职责：调用不同模型服务，把不同格式的返回数据转换成项目统一的事件。
+ *
+ * 本项目统一使用两类事件：
+ * - delta：新增的一段回答正文，上层将其追加到已有文字后面。
+ * - done：模型生成结束，携带结束原因finishReason。
+ *
+ * 注意：
+ * - done表示“生成结束”，不一定表示“回答完整成功”。
+ * - stop通常表示正常结束；length通常表示达到输出限制。
+ * - 是否接受本轮回答、是否保存，由上层业务代码判断。
+ *
+ * 数据流：
+ * 已组装的消息 → 本模块 → 模型服务
+ * 模型返回数据 → 本模块转换 → 上层路由 → SSE → 浏览器
+ *
+ * 本模块不负责读取历史、生成摘要、保存数据库或操作页面。
+ */
+
+// 只导入类型，用于检查消息结构与事件结构；编译后会被移除。
 import type { ChatMessage, ModelStreamEvent } from "@campus-ai/shared-types";
+
 import OpenAI from "openai";
 import { getContextOptions } from "./context.js";
 
-/** 将 Ollama 的 NDJSON 转为项目统一事件。 */
-// async function* 声明一个「异步生成器」：调用它不会一次性拿完结果，
-// 而是每 yield 一条事件就暂停，等上层取出后再继续，实现真正的流式输出。
+/**
+ * 调用Ollama，并将其NDJSON响应转换成统一事件。
+ *
+ * NDJSON：每一行都是一个独立的JSON对象，以换行符分隔。
+ *
+ * async function* 表示“异步生成器”：
+ * - await：等待网络数据等异步操作；
+ * - yield：向调用方交付一条事件；
+ * - return：结束整个生成器。
+ *
+ * 调用方通过for await...of逐条读取事件。
+ * 一段delta不一定对应一个Token，也不一定对应一个完整汉字或句子。
+ *
+ * @param messages 上层组装好的本轮输入，例如系统提示词、
+ *                 可选摘要、选中的近期历史和当前问题。
+ *                 不要求传入数据库中的全部历史。
+ * @param signal 上层提供的取消信号，用于停止或超时中断。
+ */
 async function* streamOllama(
-  // 本轮完整对话历史（含 system / user / assistant），Ollama需要完整上下文来续写。
   messages: ChatMessage[],
-  // 浏览器中断生成时用于取消请求的信号，避免已经没人听的连接继续占用资源。
   signal: AbortSignal,
 ): AsyncGenerator<ModelStreamEvent> {
+  // 去掉末尾的一个斜杠，避免拼接时出现“//api/chat”。
   const baseURL = (process.env.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434").replace(/\/$/, "");
 
+  // fetch返回Response后，可以继续从response.body逐块读取数据，
+  // 不必等待模型把整段回答生成完。
   const response = await fetch(`${baseURL}/api/chat`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify({
+      // 必须是目标Ollama服务中可用的模型名称。
       model: process.env.OLLAMA_MODEL ?? "qwen3:8b",
-      // 只把 role 与 content 两个字段传给 Ollama，丢弃项目内部多余的元数据。
-      messages: messages.map(({ role, content }) => ({ role, content })),
+      messages: messages.map(({ role, content }) => ({
+        role,
+        content,
+      })),
       stream: true,
+      // 请求关闭支持该选项的模型的思考输出。
+      // 是否支持及具体行为，取决于Ollama与所选模型。
       think: false,
-      // 上下文输入之外，还要给本轮回复预留 Token；与第 5 讲预算保持一致。
+
       options: {
+        // 请求使用的上下文窗口配置。
+        // 应与模型实际能力匹配，不能仅靠调大数字扩大模型能力。
         num_ctx: getContextOptions().windowTokens,
+
+        // 本次最多生成的Token数。
+        // 这是上限，不代表一定会生成这么多。
         num_predict: getContextOptions().outputTokens,
       },
     }),
+    // 上层调用controller.abort()后，可中断请求及响应流读取。
     signal,
   });
 
+  // response.ok表示HTTP状态码在200～299之间。
+  // body为空时，即使HTTP请求成功，也没有可供读取的响应流。
   if (!response.ok || !response.body) {
-    // 主动取消可能残留的响应体，释放底层连接，避免资源泄漏。
+    // 如果还有响应体，取消它，停止继续读取无用数据。
     await response.body?.cancel();
-    // 抛出一个带 HTTP 状态码的可读错误，便于前端定位是服务未启动还是模型名写错。
+
+    // 这里只返回可理解的提示，不把服务端原始响应直接展示给用户。
     throw new Error(`Ollama 调用失败，请检查服务与模型名称`);
   }
 
-  // 拿到流式读取器，用于逐块读取原始字节。
+  // getReader取得响应流的读取器，并锁定该流供当前读取器使用。
   const reader = response.body.getReader();
-  // 字节 → 字符串的解码器：fatal=true 让非法 UTF-8 字节直接报错，而不是悄悄替换成乱码。
+
+  // 同一个汉字的UTF-8字节可能分散在不同网络块中。
+  // 必须复用解码器，才能正确拼接这些字节。
+  // fatal:true表示遇到非法UTF-8编码时抛错，避免静默生成乱码。
   const decoder = new TextDecoder("utf-8", { fatal: true });
-  // buffer 缓存尚未处理完的文本，跨块拼接使用。
+
+  // 保存尚未凑成完整JSON行的文本。
+  // 解码器处理“字节边界”，buffer处理“JSON行边界”，两者职责不同。
   let buffer = "";
 
   try {
-    // 无限循环读取，直到收到 done 事件或连接关闭。
     while (true) {
-      // 读取下一块数据：value 是本块字节，done 表示流是否已经读完。
+      /**
+       * value：本次读到的字节块。
+       * done：响应字节流是否已经读完。
+       *
+       * 注意：这里的done是网络流状态，
+       * 与后面chunk.done表示的模型生成状态不是一回事。
+       */
       const { value, done } = await reader.read();
 
-      // 用同一个解码器连续解码；stream: !done 告知解码器「后面还有数据」，
-      // 使跨块的半个汉字先暂存，不会在块边界处被错误拆分。
+      // 网络流尚未结束时，保留未凑齐的字符字节，等待下一块。
+      // 网络流结束时，以非流式模式完成最后的解码检查。
       buffer += decoder.decode(value, { stream: !done });
 
-      // NDJSON 以换行符分隔，按行切开处理。
+      /**
+       * 网络块与JSON行并不一一对应：
+       * - 一个网络块可能包含多行；
+       * - 一行JSON也可能被拆到多个网络块。
+       *
+       * 因此不能直接对每次read()的结果执行JSON.parse。
+       */
       const lines = buffer.split("\n");
-      // 最后一段往往是不完整的一行，放回 buffer 等下一个块补全。
+
+      // 最后一段可能是不完整的JSON行，先留到下一次读取。
+      // 如果buffer恰好以换行结尾，最后一段就是空字符串。
       buffer = lines.pop() ?? "";
 
-      // 兼容最后一行没有换行符的情况：流结束时把 buffer 残余内容也当作一行处理。
+      // 流已经结束时，不会再有下一块数据。
+      // 如果最后一行没有换行符，也应尝试解析这段剩余文本。
       if (done && buffer.trim()) {
         lines.push(buffer);
       }
 
-      // 逐行解析 NDJSON。
       for (const line of lines) {
-        // 空行直接跳过，不参与解析。
         if (!line.trim()) continue;
 
-        // 每行是一个 JSON 对象，解析并标注其可能的字段结构。
+        /**
+         * 解析一行JSON
+         * as只告诉TypeScript预期的数据形状
+         */
         const chunk = JSON.parse(line) as {
-          // message.content：本段增量正文。
-          message?: { content?: unknown };
-          // done：流是否结束。
+          message?: {
+            content?: unknown;
+          };
           done?: boolean;
-          // done_reason：结束原因（如 stop / length）。
+          // 结束原因，例如stop、length。
           done_reason?: unknown;
-          // error：Ollama 在生成过程中报出的错误信息。
+          // 模型服务可能在流中返回错误。
           error?: unknown;
         } | null;
 
-        // 若 Ollama 在块里返回了错误，立即中止并把错误抛出给上层。
+        // 即使HTTP状态码成功，后续流中仍可能出现业务错误。
         if (chunk?.error) {
           throw new Error("Ollama 在生成过程中返回错误");
         }
 
-        // 取出本段增量正文（可能不存在）。
+        // 可选链避免在chunk或message缺失时直接访问属性。
         const text = chunk?.message?.content;
 
-        // 不能 trim 增量文本，否则会丢失空格和换行；确认是字符串且有内容才发出。
+        // 只接受非空字符串。
+        // 不对正文trim，否则可能丢掉单独传来的空格或换行。
         if (typeof text === "string" && text) {
-          // 把增量正文包装成 delta 事件交给上层。
-          yield { type: "delta", text };
+          yield {
+            type: "delta",
+            text,
+          };
         }
 
-        // 收到结束标志才结束生成；放在正文判断之后，避免遗漏最后一段正文。
+        /**
+         * 先处理正文，再处理结束标志：
+         * 同一个数据块可能同时带有最后一段文字和结束信息。
+         *
+         * chunk.done为true，只能证明模型报告“生成已结束”。
+         * 回答是否完整，还要由上层检查finishReason。
+         */
         if (chunk?.done === true) {
-          // 发出 done 事件，携带结束原因；缺省时用 "unknown" 兜底。
           yield {
             type: "done",
+
+            // 没有明确结束原因时使用unknown，
+            // 不擅自把未知情况当成正常stop。
             finishReason: typeof chunk.done_reason === "string" ? chunk.done_reason : "unknown",
           };
-          // 生成真正结束，退出整个生成器。
+          // return结束整个生成器，而不是只跳出当前for循环。
           return;
         }
       }
 
-      // 连接关闭不等于回答完整：若没收到模型的 done 标志就结束，属异常提前断开。
+      // 字节流结束，但一直没有收到模型的结束标志：
+      // 不能把“连接关闭”误判成“回答成功完成”。
       if (done) {
         throw new Error("Ollama 连接提前结束，回答未完成");
       }
     }
   } finally {
-    // 无论正常结束还是异常退出，都取消读取并释放锁，防止连接悬挂。
+    /**
+     * 正常返回、抛出异常或调用方结束迭代时，执行资源清理。
+     *
+     * cancel：取消尚未消费完的响应流。
+     * releaseLock：解除读取器对响应流的锁定。
+     */
     await reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
 }
 
-/** 将百炼 SDK 的流式结果转为项目统一事件。 */
-// 同样返回统一事件的异步生成器，底层换成 OpenAI 兼容协议（阿里百炼 / DeepSeek 等复用此分支）。
+/**
+ * 使用OpenAI兼容接口调用在线模型，并转换成统一事件。
+ *
+ * 函数名称沿用项目中的“百炼”命名。
+ * 实际服务由baseURL指定；使用其他兼容服务时，
+ * 模型名称、密钥以及请求参数必须与该服务匹配。
+ *
+ * 与Ollama分支不同：
+ * SDK已经处理了底层流式协议，这里直接读取解析后的数据块，
+ * 不需要再次手动拆分NDJSON或SSE。
+ */
 async function* streamBailian(
-  // 本轮完整对话历史。
   messages: ChatMessage[],
-  // 取消信号。
   signal: AbortSignal,
 ): AsyncGenerator<ModelStreamEvent> {
-  // 读取 API Key；缺失时直接抛出清晰错误，而不是让 SDK 报出晦涩的认证异常。
+  // 密钥只在后端读取，不应发送给浏览器或写入公开源码。
   const apiKey = process.env.DASHSCOPE_API_KEY;
 
   if (!apiKey) {
     throw new Error("请配置后端 DASHSCOPE_API_KEY");
   }
 
-  // 构造 OpenAI 兼容客户端。
   const client = new OpenAI({
-    // 认证密钥。
     apiKey,
-    // 服务端点，默认指向百炼兼容模式地址，可被环境变量覆盖。
     baseURL: process.env.DASHSCOPE_BASE_URL ?? "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    // 单次请求最长等待时间；流式场景设大一些，避免长回答中途被 SDK 掐断。
+
+    // SDK请求超时配置，单位为毫秒，300_000即300秒。
     timeout: 300_000,
-    // 本实验由用户主动重试，避免 SDK 隐式自动重复请求打乱逻辑。
+    // 禁用SDK自动重试，由用户或上层业务明确决定是否重试。
     maxRetries: 0,
   });
 
   try {
-    // 发起流式补全请求。
     const stream = await client.chat.completions.create(
       {
-        // 模型名，默认 glm-5.1，可被环境变量覆盖。
         model: process.env.DASHSCOPE_MODEL ?? "glm-5.1",
-        // 同样只保留 role 与 content，丢弃项目内部字段。
-        messages: messages.map(({ role, content }) => ({ role, content })),
-        // 采样温度，0.7 在创造性与稳定性之间取得平衡。
+        messages: messages.map(({ role, content }) => ({
+          role,
+          content,
+        })),
         temperature: 0.7,
-        // 开启流式返回。
         stream: true,
+
+        // 复用应用预留的输出预算。
+        // 这个参数限制输出，不会调整在线模型自身的上下文窗口。
         max_tokens: getContextOptions().outputTokens,
       },
-      // 取消信号必须传给真正的模型请求，否则中断不会生效。
+
+      // 将上层取消信号传给SDK请求，才能实际停止模型连接。
       { signal },
     );
 
-    // 逐块消费 SDK 返回的流。
+    // 等待并逐个读取SDK提供的响应块。
     for await (const chunk of stream) {
-      // 部分数据块可能没有 choices，不能直接连续访问下标。
+      // choices是候选结果数组，本项目只处理第一个候选。
       const choice = chunk.choices[0];
-      // 取出本块的增量正文。
+      // delta.content是本块新增正文，不是已经生成的全部回答。
       const text = choice?.delta.content;
-
-      // 有正文就发 delta 事件。
       if (text) {
-        yield { type: "delta", text };
+        yield {
+          type: "delta",
+          text,
+        };
       }
-
-      // 出现结束原因即视为本次回答结束。
+      // finish_reason出现时，表示这个候选的生成已经结束。
+      // 同样先发正文，再发结束事件，避免遗漏最后一段文字。
       if (choice?.finish_reason) {
-        // 发出 done 事件，携带结束原因。
         yield {
           type: "done",
           finishReason: choice.finish_reason,
         };
-        // 结束生成器。
         return;
       }
     }
 
-    // 流自然结束却没收到结束原因，说明连接被提前关闭，回答不完整。
+    // 流迭代结束，却没有拿到明确的结束原因，视为异常。
     throw new Error("在线模型连接提前结束，回答未完成");
   } catch (error: unknown) {
-    // 若是 SDK 抛出的 API 错误，转换成不含敏感信息的可读消息。
+    // unknown要求先判断错误类型，再访问SDK特有字段。
     if (error instanceof OpenAI.APIError) {
-      // 不把完整 SDK 错误对象、请求头或密钥返回给浏览器。
       throw new Error(`在线模型调用失败（HTTP ${error.status ?? "未知"}），请检查后端配置`, {
         cause: error,
       });
     }
-
-    // 其他错误原样抛出，交给上层统一处理。
+    // 其他错误继续向上传递，由上层区分取消、超时或业务失败。
     throw error;
   }
 }
 
-// 导出两个流式生成器，供路由层的 streamConfiguredModel 按 provider 分派调用。
 export { streamBailian, streamOllama };

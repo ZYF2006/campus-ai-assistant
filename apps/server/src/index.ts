@@ -16,6 +16,8 @@ app.get("/api/health", async (_request, response) => {
   await getPool().query("SELECT 1");
   response.json({ message: "server and database are ready" });
 });
+
+//在所有 /api 路由之后、错误处理中间件之前
 app.use("/api", (_request, response) => {
   response.status(404).json({ code: 1, message: "接口不存在", data: null });
 });

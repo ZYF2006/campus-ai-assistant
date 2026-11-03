@@ -10,7 +10,19 @@ import { acquireSession } from "../services/session-lock.js";
 export const chatStreamRouter = Router();
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** TypeScript 只检查编译期；来自浏览器的 JSON 还需要运行时校验。 */
+/**
+ * 校验并规范化前端请求。
+ *
+ * TypeScript类型在运行时不会自动检查JSON，
+ * 因此先把请求当作unknown，检查通过后再返回明确的请求类型。
+ *
+ * 前端只提交：
+ * - sessionId：属于哪个会话；
+ * - requestId：是哪一次逻辑提问，重试时保持不变；
+ * - content：当前问题。
+ *
+ * 历史消息由服务端读取，不由客户端自行提供。
+ */
 function validateBody(body: unknown): SessionChatRequest {
   if (
     !body ||
@@ -35,10 +47,25 @@ function validateBody(body: unknown): SessionChatRequest {
   };
 }
 
+/**
+ * 将项目事件编码为一帧SSE文本。
+ *
+ * 示例：
+ * data: {"type":"delta","text":"你好"}
+ *
+ * data:后面是JSON，末尾两个换行表示这一帧结束。
+ * JSON.stringify会转义正文中的换行，避免破坏帧边界。
+ */
 function encodeEvent(event: ChatStreamEvent): string {
   return `data: ${JSON.stringify(event)}\n\n`;
 }
 
+/**
+ * 设置流式响应头。
+ *
+ * response.set只配置响应头；通常在首次write或end时实际发送。
+ * 一旦headersSent为true，就不能再修改HTTP状态码或响应头。
+ */
 function startStream(response: Response): void {
   if (!response.headersSent)
     response.set({
@@ -48,6 +75,12 @@ function startStream(response: Response): void {
     });
 }
 
+/**
+ * 统一处理错误。
+ *
+ * 尚未开始发送响应：返回HTTP错误状态码和普通JSON。
+ * 已经发送流式响应：发送SSE error事件，再结束响应。
+ */
 function sendError(response: Response, error: unknown, timedOut: boolean): void {
   if (response.destroyed || response.writableEnded) return;
   const problem = timedOut ? new HttpError(504, "生成超时，请重试") : toHttpError(error);
@@ -59,6 +92,14 @@ function sendError(response: Response, error: unknown, timedOut: boolean): void 
   }
 }
 
+/**
+ * 流式问答接口。
+ *
+ * POST /api/chat/stream
+ *
+ * 使用fetch发送JSON请求，再读取返回的SSE事件流。
+ * 本接口协调请求、历史、模型与数据库，具体实现交给对应模块。
+ */
 chatStreamRouter.post("/api/chat/stream", async (request, response) => {
   let body: SessionChatRequest;
   try {
@@ -67,7 +108,7 @@ chatStreamRouter.post("/api/chat/stream", async (request, response) => {
     sendError(response, error, false);
     return;
   }
-  // 单进程教学版：同一会话一次只允许一个生成或修改操作。
+  // 单进程：同一会话一次只允许一个生成或修改操作。
   const release = acquireSession(body.sessionId);
   if (!release) {
     sendError(response, new HttpError(409, "该会话正在处理请求，请稍后重试"), false);
@@ -124,20 +165,30 @@ chatStreamRouter.post("/api/chat/stream", async (request, response) => {
         if (event.finishReason !== "stop")
           throw new Error(`回答未完整结束（${event.finishReason}），本轮未保存，可重试`);
         if (!answer.trim()) throw new Error("模型未返回正文，本轮未保存");
+
         // 完整的一轮一起提交；只有提交成功，done 才表示“已生成且已保存”。
         await saveTurn(body.sessionId, body.requestId, body.content, answer);
+
+        //保存成功后才发送done。
+        // 本接口的done表示“回答正常结束，并且已完成保存”。
         startStream(response);
         response.end(encodeEvent({ type: "done", finishReason: "stop" }));
         return;
       }
     }
+    // 生成器耗尽却没有明确的结束事件，不能当作正常完成。
     throw new Error("连接提前结束，本轮未保存，请重试");
   } catch (error) {
+    // 根据响应是否已经开始，选择JSON错误或SSE错误事件。
     sendError(response, error, timedOut);
   } finally {
-    clearTimeout(timer);
-    response.off("close", onClose);
-    controller.abort();
-    release();
+    /**
+     * 无论成功、失败、取消，还是在try中提前return，
+     * 都执行以下清理，避免定时器、连接或会话锁残留。
+     */
+    clearTimeout(timer); // 清除超时任务。
+    response.off("close", onClose); // 移除当前请求的监听器。
+    controller.abort(); // 通知尚未结束的上游操作取消。
+    release(); // 释放会话锁，允许后续操作。
   }
 });

@@ -1,6 +1,6 @@
 import { loadNotices } from "../knowledge/loader.js";
 
-export type CampusAssistantPromptVersion = "v1" | "v2";
+export type CampusAssistantPromptVersion = "v1" | "v2" | "v3";
 export interface CampusAssistantPrompt {
   version: CampusAssistantPromptVersion; // 版本号，与 CampusAssistantPromptVersion 对应
   changeNote: string; // 相对上一版的变更说明，方便团队追溯改动背景
@@ -50,8 +50,29 @@ const promptVersions: Record<CampusAssistantPromptVersion, CampusAssistantPrompt
 《学院通知资料》
 以下内容整理自学院发布的正式通知文件，是回答毕业设计与实习安排类问题的唯一依据：${loadNotices()}`,
   },
+  v3: {
+    version: "v3",
+    changeNote:
+      "精简版：按问题类型分流（通知类/对话记忆类/技术类），去掉逐条穷举和无关展开，收敛输出长度，限定只为资料中真实存在的附件给下载链接。",
+    systemPrompt: `你是面向计算机科学与技术专业本科生的校园AI助手，帮助解答毕业设计、毕业实习和论文写作中的一般问题。
+
+回答问题前先判断问题类型，只适用对应规则：
+1. 通知类（实习时间、材料、附件、流程、表格要求）：只依据《学院通知资料》回答，逐条列出与问题直接相关的内容，不补充资料以外的日期、材料或要求。资料没有的就回答"通知资料中未提及"，并提示查看学院正式文件或咨询指导老师。
+2. 对话记忆类（我的项目、之前说过什么、已记录的背景）：只依据对话历史和摘要回答；用户后来的更正优先于之前的内容。
+3. 技术类（选题、需求分析、系统设计、技术选型、编码、论文写作）：用通用专业知识回答，给出思路和可执行步骤，不虚构本校制度、数据、实验结果或参考文献。
+
+其他要求：
+1. 资料前后说法不一致时（例如截止时间），并列写出两种说法，并提示以学院最终通知为准。
+2. 只有《学院通知资料》中标明下载链接的附件才给链接，格式为 [附件名称](/download/文件名)；资料未提供电子版的，说明"资料未提供，请向指导老师或辅导员获取"，不要编造链接。
+3. 默认简洁：清单类用编号列出要点，一条一个信息点；技术类先给结论，再给 3 至 6 条关键步骤；不展开与问题无关的细节，用户要求详细时才展开。
+4. 信息不足时先说明缺少什么；不确定就说不确定；不声称检查过用户没有提供的代码、文档或数据。
+5. 使用简洁中文，除下载链接外不使用加粗、表格、标题等 Markdown 标记，不重复用户的问题。
+
+《学院通知资料》
+以下内容来自学院正式通知，是通知类问题的唯一依据：${loadNotices()}`,
+  },
 };
-export const ACTIVE_PROMPT_VERSION: CampusAssistantPromptVersion = "v2";
+export const ACTIVE_PROMPT_VERSION: CampusAssistantPromptVersion = "v3";
 export function getCampusAssistantPrompt(
   version?: CampusAssistantPromptVersion,
 ): CampusAssistantPrompt {

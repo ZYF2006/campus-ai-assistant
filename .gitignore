@@ -58,3 +58,6 @@ pnpm-debug.log*
 # 本机环境的 MSYS sh 不可用，用 .bat 等价替代 .husky/pre-commit 与 .husky/commit-msg，
 # 这类包装脚本仅在本机生效，不属于项目配置，不提交。
 .husky/*.bat
+
+# ---------- 本机 ACL 诊断备份（环境相关，不进仓库）----------
+.acl-recovery/
