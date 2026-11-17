@@ -13,6 +13,7 @@
     "build": "pnpm -r --if-present build",
     "typecheck": "pnpm -r --if-present typecheck",
     "db:init": "pnpm --filter @campus-ai/server db:init",
+    "rag": "pnpm --filter @campus-ai/server exec tsx",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

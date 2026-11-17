@@ -6,6 +6,7 @@
 
 # ---------- 依赖 ----------
 node_modules/
+apps/server/chroma-data/
 
 # ---------- 构建产物 ----------
 dist/

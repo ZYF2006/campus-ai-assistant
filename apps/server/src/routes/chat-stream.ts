@@ -4,6 +4,7 @@ import { Router, type Response } from "express";
 import { HttpError, toHttpError } from "../lib/http-error.js";
 import { getSession, saveTurn } from "../repositories/sessions.js";
 import { prepareConversation } from "../services/conversation.js";
+import { retrieve } from "../rag/retrieve.js";
 import { streamConfiguredModel } from "../services/llm.js";
 import { acquireSession } from "../services/session-lock.js";
 
@@ -151,7 +152,10 @@ chatStreamRouter.post("/api/chat/stream", async (request, response) => {
       return;
     }
 
-    const messages = await prepareConversation(body, controller.signal);
+    const sources = await retrieve(body.content, controller.signal);
+    const messages = await prepareConversation(body, controller.signal, sources);
+    const references = [...new Set(sources.map((item) => `${item.source} / ${item.section}`))];
+    const referenceFooter = references.length ? `\n\n本轮参考资料：\n${references.join("\n")}` : "";
     let answer = "";
     for await (const event of streamConfiguredModel(messages, controller.signal)) {
       controller.signal.throwIfAborted();
@@ -167,12 +171,16 @@ chatStreamRouter.post("/api/chat/stream", async (request, response) => {
         if (!answer.trim()) throw new Error("模型未返回正文，本轮未保存");
 
         // 完整的一轮一起提交；只有提交成功，done 才表示“已生成且已保存”。
+        answer += referenceFooter;
         await saveTurn(body.sessionId, body.requestId, body.content, answer);
 
         //保存成功后才发送done。
         // 本接口的done表示“回答正常结束，并且已完成保存”。
         startStream(response);
-        response.end(encodeEvent({ type: "done", finishReason: "stop" }));
+        response.end(
+          (referenceFooter ? encodeEvent({ type: "delta", text: referenceFooter }) : "") +
+            encodeEvent({ type: "done", finishReason: "stop" }),
+        );
         return;
       }
     }

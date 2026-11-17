@@ -1,6 +1,7 @@
 import type { ChatMessage, SessionChatRequest } from "@campus-ai/shared-types";
 import { HttpError } from "../lib/http-error.js";
 import { buildChatMessages } from "../prompts/build-messages.js";
+import type { RagSource } from "../rag/chunk.js";
 import { getSession, updateSummary } from "../repositories/sessions.js";
 import { estimateTokens, getContextOptions, selectHistory, SUMMARY_MAX_CHARS } from "./context.js";
 import { streamConfiguredModel } from "./llm.js";
@@ -51,12 +52,14 @@ async function summarize(
 export async function prepareConversation(
   request: SessionChatRequest,
   signal: AbortSignal,
+  sources: RagSource[] = [],
 ): Promise<ChatMessage[]> {
   const stored = await getSession(request.sessionId);
   if (!stored) throw new HttpError(404, "会话不存在，请重新加载页面");
   const current: ChatMessage = { id: request.requestId, role: "user", content: request.content };
   const options = getContextOptions();
-  const { recent, older } = selectHistory(stored.messages, current, buildChatMessages([]), options);
+  const baseMessages = buildChatMessages([], undefined, "", sources);
+  const { recent, older } = selectHistory(stored.messages, current, baseMessages, options);
   let summary = "";
 
   if (options.useSummary && older.length) {
@@ -73,5 +76,9 @@ export async function prepareConversation(
   }
 
   signal.throwIfAborted();
-  return buildChatMessages([...recent, current], undefined, summary);
+  const messages = buildChatMessages([...recent, current], undefined, summary, sources);
+  if (estimateTokens(messages) + options.outputTokens > options.windowTokens) {
+    throw new HttpError(400, "本轮输入超过预算，请缩短问题或调整窗口");
+  }
+  return messages;
 }
